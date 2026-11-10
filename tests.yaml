@@ -1,0 +1,489 @@
+version: "0.1.0"
+
+# Conformance cases for the anviz-tcb codec. See SPEC.md, section Testing.
+# Bytes are lowercase hex strings. Device ids (ch) are 4 bytes, 8 hex digits.
+# Cases marked (captured) use bytes recorded from a real Anviz G100-N.
+
+crc16:
+  - name: "heartbeat body (captured: frame ends e0 5c)"
+    input: "a5000000007f0000"
+    output: 23776
+  - name: "standard check value for ASCII 123456789"
+    input: "313233343536373839"
+    output: 28561
+  - name: "empty input is the initial value"
+    input: ""
+    output: 65535
+  - name: "pong body (captured: frame ends 3c ca)"
+    input: "a500000000ff000000"
+    output: 51772
+
+has_ret:
+  - name: "0x7f heartbeat"
+    input: 127
+    output: false
+  - name: "0x48 a command"
+    input: 72
+    output: false
+  - name: "0xc8 a response"
+    input: 200
+    output: true
+  - name: "0xdf realtime punch"
+    input: 223
+    output: true
+  - name: "0xff pong"
+    input: 255
+    output: true
+  - name: "0x80 lowest response code"
+    input: 128
+    output: true
+  - name: "0x00 zero"
+    input: 0
+    output: false
+
+encode_frame:
+  - name: "heartbeat (captured)"
+    input: {"ch": "00000000", "cmd": 127, "data": ""}
+    output: "a5000000007f0000e05c"
+  - name: "pong: response code gets a RET byte, default 0 (captured)"
+    input: {"ch": "00000000", "cmd": 255, "data": ""}
+    output: "a500000000ff0000003cca"
+  - name: "command with data (captured get punches)"
+    input: {"ch": "00000001", "cmd": 64, "data": "0119"}
+    output: "a500000001400002011956ea"
+  - name: "response with explicit RET and data (captured device type reply)"
+    input: {"ch": "00000001", "cmd": 200, "ret": 0, "data": "473130302d4e0000"}
+    output: "a500000001c8000008473130302d4e0000e109"
+  - name: "nonzero RET"
+    input: {"ch": "00000001", "cmd": 243, "ret": 1, "data": ""}
+    output: "a500000001f3010000900c"
+  - name: "RET is ignored for a command code below 0x80"
+    input: {"ch": "00000000", "cmd": 127, "ret": 5, "data": ""}
+    output: "a5000000007f0000e05c"
+  - name: "device id must be 4 bytes"
+    input: {"ch": "000001", "cmd": 72, "data": ""}
+    error: true
+
+split_frames:
+  - name: "one heartbeat (captured)"
+    input: "a5000000007f0000e05c"
+    output: {"frames": [{"ch": "00000000", "cmd": 127, "ret": null, "data": ""}], "rest": ""}
+  - name: "realtime punch: 0xDF has a RET byte (captured)"
+    input: "a500000001df00000e00000000013280e5950100000000d28d"
+    output: {"frames": [{"ch": "00000001", "cmd": 223, "ret": 0, "data": "00000000013280e5950100000000"}], "rest": ""}
+  - name: "date/time reply (captured)"
+    input: "a500000001b80000061a0b07110f06ed2b"
+    output: {"frames": [{"ch": "00000001", "cmd": 184, "ret": 0, "data": "1a0b07110f06"}], "rest": ""}
+  - name: "two frames in one buffer"
+    input: "a5000000007f0000e05ca500000000ff0000003cca"
+    output: {"frames": [{"ch": "00000000", "cmd": 127, "ret": null, "data": ""}, {"ch": "00000000", "cmd": 255, "ret": 0, "data": ""}], "rest": ""}
+  - name: "a reply and a heartbeat in one read"
+    input: "a500000001c8000008473130302d4e0000e109a5000000007f0000e05c"
+    output: {"frames": [{"ch": "00000001", "cmd": 200, "ret": 0, "data": "473130302d4e0000"}, {"ch": "00000000", "cmd": 127, "ret": null, "data": ""}], "rest": ""}
+  - name: "partial frame: kept as rest"
+    input: "a5000000007f"
+    output: {"frames": [], "rest": "a5000000007f"}
+  - name: "partial response, header incomplete"
+    input: "a500000001c80000"
+    output: {"frames": [], "rest": "a500000001c80000"}
+  - name: "partial response, data incomplete"
+    input: "a500000001c8000008473130302d4e"
+    output: {"frames": [], "rest": "a500000001c8000008473130302d4e"}
+  - name: "one full frame then a partial one"
+    input: "a500000000ff0000003ccaa5000000"
+    output: {"frames": [{"ch": "00000000", "cmd": 255, "ret": 0, "data": ""}], "rest": "a5000000"}
+  - name: "lone start byte"
+    input: "a5"
+    output: {"frames": [], "rest": "a5"}
+  - name: "empty buffer"
+    input: ""
+    output: {"frames": [], "rest": ""}
+  - name: "garbage before a frame is skipped"
+    input: "0102a5000000007f0000e05c"
+    output: {"frames": [{"ch": "00000000", "cmd": 127, "ret": null, "data": ""}], "rest": ""}
+  - name: "garbage with no start byte is discarded"
+    input: "010203"
+    output: {"frames": [], "rest": ""}
+  - name: "bad CRC is dropped"
+    input: "a5000000007f0000e000"
+    output: {"frames": [], "rest": ""}
+  - name: "bad CRC, then a good frame"
+    input: "a5000000007f0000e000a500000000ff0000003cca"
+    output: {"frames": [{"ch": "00000000", "cmd": 255, "ret": 0, "data": ""}], "rest": ""}
+
+pong:
+  - name: "device id 0 (captured)"
+    input: {"ch": "00000000"}
+    output: "a500000000ff0000003cca"
+  - name: "echoes a nonzero device id"
+    input: {"ch": "00000001"}
+    output: "a500000001ff00000078c1"
+
+cmd_get_device_type:
+  - name: "device id 0 (captured)"
+    input: {"ch": "00000000"}
+    output: "a5000000004800004b56"
+
+cmd_get_serial:
+  - name: "device id 1 (captured)"
+    input: {"ch": "00000001"}
+    output: "a5000000012400001eea"
+
+cmd_get_datetime:
+  - name: "device id 1 (captured)"
+    input: {"ch": "00000001"}
+    output: "a50000000138000028ca"
+
+cmd_set_datetime:
+  - name: "2026-11-07 17:00:20 (captured)"
+    input: {"ch": "00000001", "datetime": {"year": 2026, "month": 11, "day": 7, "hour": 17, "minute": 0, "second": 20}}
+    output: "a5000000013900061a0b071100144844"
+
+cmd_get_record_counts:
+  - name: "device id 1 (captured)"
+    input: {"ch": "00000001"}
+    output: "a5000000013c000049a9"
+
+cmd_get_punches:
+  - name: "kind all, 25 at a time"
+    input: {"ch": "00000001", "kind": "all", "count": 25}
+    output: "a500000001400002011956ea"
+  - name: "kind new, 25 at a time"
+    input: {"ch": "00000001", "kind": "new", "count": 25}
+    output: "a50000000140000202193ec0"
+  - name: "kind continue, 25 at a time"
+    input: {"ch": "00000001", "kind": "continue", "count": 25}
+    output: "a50000000140000200198ef3"
+
+cmd_get_users:
+  - name: "first page of 8 (captured)"
+    input: {"ch": "00000000", "kind": "first", "count": 8}
+    output: "a50000000072000201082c2d"
+  - name: "next page"
+    input: {"ch": "00000000", "kind": "continue", "count": 8}
+    output: "a5000000007200020008f434"
+
+cmd_set_users:
+  - name: "one user"
+    input: {"ch": "00000000", "users": [{"user_id": 2, "name": "Ana", "pin": "1234", "card": null, "method": 0, "admin": false}]}
+    output: "a5000000007300290100000000024004d2ffffffff0041006e00610000000000000000000000000000010100000000ff4040d4"
+  - name: "two users in one frame"
+    input: {"ch": "00000001", "users": [{"user_id": 2, "name": "Ana", "pin": "1234", "card": null, "method": 0, "admin": false}, {"user_id": 3, "name": "Beatriz", "pin": null, "card": 1234567, "method": 4, "admin": false}]}
+    output: "a5000000017300510200000000024004d2ffffffff0041006e00610000000000000000000000000000010100000000ff400000000003ffffff0012d687004200650061007400720069007a0000000000000101040000ffff40e32d"
+  - name: "no users is an error"
+    input: {"ch": "00000000", "users": []}
+    error: true
+
+cmd_delete_user:
+  - name: "whole user (parts omitted)"
+    input: {"ch": "00000000", "user_id": 18}
+    output: "a5000000004c00060000000012ff7faf"
+  - name: "finger 1 only (captured)"
+    input: {"ch": "00000000", "user_id": 1, "parts": ["finger1"]}
+    output: "a5000000004c0006000000000101770e"
+  - name: "PIN and card"
+    input: {"ch": "00000000", "user_id": 5, "parts": ["pin", "card"]}
+    output: "a5000000004c000600000000050cf2b2"
+  - name: "unknown part is an error"
+    input: {"ch": "00000000", "user_id": 5, "parts": ["face"]}
+    error: true
+
+cmd_clear_punches:
+  - name: "delete all (captured)"
+    input: {"ch": "00000000", "mode": "delete_all"}
+    output: "a5000000004e00040000000045f6"
+  - name: "mark all read"
+    input: {"ch": "00000001", "mode": "mark_read"}
+    output: "a5000000014e000401000000416b"
+  - name: "mark 4 read"
+    input: {"ch": "00000001", "mode": "mark_read_count", "amount": 4}
+    output: "a5000000014e000402000004a808"
+
+cmd_get_fingerprint:
+  - name: "user 1, finger 1 (captured)"
+    input: {"ch": "00000000", "user_id": 1, "finger": 1}
+    output: "a500000000440006000000000101bd71"
+  - name: "user 1, finger 2"
+    input: {"ch": "00000000", "user_id": 1, "finger": 2}
+    output: "a5000000004400060000000001022643"
+  - name: "finger 3 is an error"
+    input: {"ch": "00000000", "user_id": 1, "finger": 3}
+    error: true
+
+cmd_set_fingerprint:
+  - name: "338-byte template (bytes 00..ff repeating)"
+    input: {"ch": "00000000", "user_id": 1, "finger": 1, "template": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f5051"}
+    output: "a500000000450158000000000101000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f50518e2d"
+  - name: "wrong template length is an error"
+    input: {"ch": "00000000", "user_id": 1, "finger": 1, "template": "00000000000000000000"}
+    error: true
+
+encode_datetime:
+  - name: "2026-11-07 17:00:20 (captured)"
+    input: {"year": 2026, "month": 11, "day": 7, "hour": 17, "minute": 0, "second": 20}
+    output: "1a0b07110014"
+  - name: "start of 2000"
+    input: {"year": 2000, "month": 1, "day": 1, "hour": 0, "minute": 0, "second": 0}
+    output: "000101000000"
+  - name: "end of 2099"
+    input: {"year": 2099, "month": 12, "day": 31, "hour": 23, "minute": 59, "second": 59}
+    output: "630c1f173b3b"
+  - name: "year before 2000 is an error"
+    input: {"year": 1999, "month": 12, "day": 31, "hour": 23, "minute": 59, "second": 59}
+    error: true
+  - name: "year after 2255 is an error"
+    input: {"year": 2256, "month": 1, "day": 1, "hour": 0, "minute": 0, "second": 0}
+    error: true
+
+decode_datetime:
+  - name: "2026-11-07 17:00:20 (captured)"
+    input: "1a0b07110014"
+    output: "2026-11-07T17:00:20"
+  - name: "device clock reply data (captured)"
+    input: "1a0b07110f06"
+    output: "2026-11-07T17:15:06"
+  - name: "wrong length is an error"
+    input: "1a0b0711"
+    error: true
+  - name: "impossible date is an error"
+    input: "1a0d20000000"
+    error: true
+
+decode_device_type:
+  - name: "G100-N (captured)"
+    input: "473130302d4e0000"
+    output: "G100-N"
+
+decode_serial:
+  - name: "16 digits"
+    input: "31323334353637383930313233343536"
+    output: "1234567890123456"
+
+decode_punch:
+  - name: "fingerprint, in (captured)"
+    input: "00000000013280d2450100000000"
+    output: {"user_id": 1, "time": "2026-11-07T18:00:37", "method": "fingerprint", "state": "in", "work_code": 0}
+  - name: "fingerprint, out (captured)"
+    input: "00000000013280d24f0101000000"
+    output: {"user_id": 1, "time": "2026-11-07T18:00:47", "method": "fingerprint", "state": "out", "work_code": 0}
+  - name: "fingerprint, from a realtime frame (captured)"
+    input: "00000000013280e5950100000000"
+    output: {"user_id": 1, "time": "2026-11-07T19:23:01", "method": "fingerprint", "state": "in", "work_code": 0}
+  - name: "PIN (captured)"
+    input: "00000000053280d9db0400000000"
+    output: {"user_id": 5, "time": "2026-11-07T18:32:59", "method": "pin", "state": "in", "work_code": 0}
+  - name: "card, break out"
+    input: "00000000093280d24f0802000000"
+    output: {"user_id": 9, "time": "2026-11-07T18:00:47", "method": "card", "state": "break-out", "work_code": 0}
+  - name: "finger 2, break in"
+    input: "00000000093280d24f0203000000"
+    output: {"user_id": 9, "time": "2026-11-07T18:00:47", "method": "fingerprint", "state": "break-in", "work_code": 0}
+  - name: "overtime in and work code"
+    input: "00000000093280d24f010400002a"
+    output: {"user_id": 9, "time": "2026-11-07T18:00:47", "method": "fingerprint", "state": "overtime-in", "work_code": 42}
+  - name: "overtime out"
+    input: "00000000093280d24f0105000000"
+    output: {"user_id": 9, "time": "2026-11-07T18:00:47", "method": "fingerprint", "state": "overtime-out", "work_code": 0}
+  - name: "time 0 is 2000-01-02 (the device runs a day behind)"
+    input: "0000000001000000000100000000"
+    output: {"user_id": 1, "time": "2000-01-02T00:00:00", "method": "fingerprint", "state": "in", "work_code": 0}
+  - name: "unknown method and state"
+    input: "0000000001000000000309000000"
+    output: {"user_id": 1, "time": "2000-01-02T00:00:00", "method": "unknown(3)", "state": "unknown(9)", "work_code": 0}
+  - name: "largest user id"
+    input: "ffffffffff000000000100000000"
+    output: {"user_id": 1099511627775, "time": "2000-01-02T00:00:00", "method": "fingerprint", "state": "in", "work_code": 0}
+  - name: "wrong length is an error"
+    input: "0000000001"
+    error: true
+
+decode_punch_batch:
+  - name: "empty device (captured reply data)"
+    input: "00"
+    output: []
+  - name: "two punches"
+    input: "0200000000013280d245010000000000000000013280d24f0101000000"
+    output: [{"user_id": 1, "time": "2026-11-07T18:00:37", "method": "fingerprint", "state": "in", "work_code": 0}, {"user_id": 1, "time": "2026-11-07T18:00:47", "method": "fingerprint", "state": "out", "work_code": 0}]
+  - name: "length that isn't count x 14 is an error"
+    input: "0200000000013280d2450100000000"
+    error: true
+
+pin_encode:
+  - name: "1 (captured)"
+    input: "1"
+    output: "100001"
+  - name: "22 (captured)"
+    input: "22"
+    output: "200016"
+  - name: "333 (captured)"
+    input: "333"
+    output: "30014d"
+  - name: "1234 (captured)"
+    input: "1234"
+    output: "4004d2"
+  - name: "0042"
+    input: "0042"
+    output: "40002a"
+  - name: "999999"
+    input: "999999"
+    output: "6f423f"
+  - name: "000000"
+    input: "000000"
+    output: "600000"
+  - name: "no PIN"
+    input: null
+    output: "ffffff"
+  - name: "letters are an error"
+    input: "12a4"
+    error: true
+  - name: "more than 6 digits is an error"
+    input: "1234567"
+    error: true
+
+pin_decode:
+  - name: "100001"
+    input: "100001"
+    output: "1"
+  - name: "200016"
+    input: "200016"
+    output: "22"
+  - name: "30014d"
+    input: "30014d"
+    output: "333"
+  - name: "4004d2"
+    input: "4004d2"
+    output: "1234"
+  - name: "40002a"
+    input: "40002a"
+    output: "0042"
+  - name: "6f423f"
+    input: "6f423f"
+    output: "999999"
+  - name: "ffffff"
+    input: "ffffff"
+    output: null
+
+encode_user:
+  - name: "PIN, no card"
+    input: {"user_id": 2, "name": "Ana", "pin": "1234", "card": null, "method": 0, "admin": false}
+    output: "00000000024004d2ffffffff0041006e00610000000000000000000000000000010100000000ff40"
+  - name: "card, no PIN, ID+finger"
+    input: {"user_id": 3, "name": "Beatriz", "pin": null, "card": 1234567, "method": 4, "admin": false}
+    output: "0000000003ffffff0012d687004200650061007400720069007a0000000000000101040000ffff40"
+  - name: "admin with PIN and card"
+    input: {"user_id": 1, "name": "Admin", "pin": "1234", "card": 1234567, "method": 0, "admin": true}
+    output: "00000000014004d20012d68700410064006d0069006e00000000000000000000010100000000ffc0"
+  - name: "accents are kept (no folding here)"
+    input: {"user_id": 4, "name": "Martín", "pin": null, "card": null, "method": 0, "admin": false}
+    output: "0000000004ffffffffffffff004d00610072007400ed006e00000000000000000101000000ffff40"
+  - name: "name longer than 10 characters is cut"
+    input: {"user_id": 5, "name": "Josefina Ramírez", "pin": "0042", "card": null, "method": 0, "admin": false}
+    output: "000000000540002affffffff004a006f0073006500660069006e006100200052010100000000ff40"
+  - name: "no PIN, no card, empty name"
+    input: {"user_id": 6, "name": "", "pin": null, "card": null, "method": 0, "admin": false}
+    output: "0000000006ffffffffffffff00000000000000000000000000000000000000000101000000ffff40"
+  - name: "method defaults to any, admin to false"
+    input: {"user_id": 2, "name": "Ana", "pin": "1234"}
+    output: "00000000024004d2ffffffff0041006e00610000000000000000000000000000010100000000ff40"
+  - name: "user id over 40 bits is an error"
+    input: {"user_id": 1099511627776, "name": "Ana"}
+    error: true
+  - name: "card over 32 bits is an error"
+    input: {"user_id": 2, "name": "Ana", "card": 4294967296}
+    error: true
+  - name: "card ffffffff is reserved for no card"
+    input: {"user_id": 2, "name": "Ana", "card": 4294967295}
+    error: true
+
+decode_user:
+  - name: "PIN, no card"
+    input: "00000000024004d2ffffffff0041006e00610000000000000000000000000000010100000000ff40"
+    output: {"user_id": 2, "name": "Ana", "pin": "1234", "card": null, "method": 0, "admin": false, "fingers": []}
+  - name: "card, no PIN, ID+finger"
+    input: "0000000003ffffff0012d687004200650061007400720069007a0000000000000101040000ffff40"
+    output: {"user_id": 3, "name": "Beatriz", "pin": null, "card": 1234567, "method": 4, "admin": false, "fingers": []}
+  - name: "admin with PIN and card"
+    input: "00000000014004d20012d68700410064006d0069006e00000000000000000000010100000000ffc0"
+    output: {"user_id": 1, "name": "Admin", "pin": "1234", "card": 1234567, "method": 0, "admin": true, "fingers": []}
+  - name: "accents are kept (no folding here)"
+    input: "0000000004ffffffffffffff004d00610072007400ed006e00000000000000000101000000ffff40"
+    output: {"user_id": 4, "name": "Martín", "pin": null, "card": null, "method": 0, "admin": false, "fingers": []}
+  - name: "name longer than 10 characters is cut"
+    input: "000000000540002affffffff004a006f0073006500660069006e006100200052010100000000ff40"
+    output: {"user_id": 5, "name": "Josefina R", "pin": "0042", "card": null, "method": 0, "admin": false, "fingers": []}
+  - name: "no PIN, no card, empty name"
+    input: "0000000006ffffffffffffff00000000000000000000000000000000000000000101000000ffff40"
+    output: {"user_id": 6, "name": "", "pin": null, "card": null, "method": 0, "admin": false, "fingers": []}
+  - name: "as read back from the device: finger 1 enrolled"
+    input: "00000000024004d2ffffffff0041006e006100000000000000000000000000000001000001000040"
+    output: {"user_id": 2, "name": "Ana", "pin": "1234", "card": null, "method": 0, "admin": false, "fingers": [1]}
+  - name: "both fingers enrolled"
+    input: "00000000024004d2ffffffff0041006e006100000000000000000000000000000001000003000040"
+    output: {"user_id": 2, "name": "Ana", "pin": "1234", "card": null, "method": 0, "admin": false, "fingers": [1, 2]}
+  - name: "name ends at the first 0000 code unit, not any 00 00 byte pair"
+    input: "0000000007ffffffffffffff01000041000000000000000000000000000000000101000000ffff40"
+    output: {"user_id": 7, "name": "ĀA", "pin": null, "card": null, "method": 0, "admin": false, "fingers": []}
+  - name: "wrong length is an error"
+    input: "000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    error: true
+
+normalize_device_name:
+  - name: "Martín Núñez"
+    input: "Martín Núñez"
+    output: "Martin Nun"
+  - name: "José"
+    input: "José"
+    output: "Jose"
+  - name: "Peña"
+    input: "Peña"
+    output: "Pena"
+  - name: "Müller"
+    input: "Müller"
+    output: "Muller"
+  - name: "Straße"
+    input: "Straße"
+    output: "Strasse"
+  - name: "Ñandú"
+    input: "Ñandú"
+    output: "Nandu"
+  - name: "¡Hola! ¿Qué?"
+    input: "¡Hola! ¿Qué?"
+    output: "Hola! Que?"
+  - name: "Œuvre Ørsted"
+    input: "Œuvre Ørsted"
+    output: "OEuvre Ors"
+  - name: "Ana  María\\tLópez"
+    input: "Ana  María\tLópez"
+    output: "Ana Maria "
+  - name: "  Ana  "
+    input: "  Ana  "
+    output: "Ana"
+  - name: "Ana 😀"
+    input: "Ana 😀"
+    output: "Ana"
+  - name: "Łukasz"
+    input: "Łukasz"
+    output: "ukasz"
+  - name: "Lucía Fernández"
+    input: "Lucía Fernández"
+    output: "Lucia Fern"
+  - name: "empty"
+    input: ""
+    output: ""
+  - name: "Beatriz"
+    input: "Beatriz"
+    output: "Beatriz"
+
+decode_record_counts:
+  - name: "empty device (captured)"
+    input: "000000000000000000000000000000000000"
+    output: {"users": 0, "all": 0, "new": 0}
+  - name: "17 users, no punches (captured)"
+    input: "000011000000000001000000000000000000"
+    output: {"users": 17, "all": 0, "new": 0}
+  - name: "17 users, 6 punches, 6 new (captured)"
+    input: "000011000001000005000000000006000006"
+    output: {"users": 17, "all": 6, "new": 6}
+  - name: "wrong length is an error"
+    input: "0000"
+    error: true
